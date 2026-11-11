@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Put a bare-metal program in front of Android's kernel in a boot image (header v2).
+Put a bare-metal program in front of Android's kernel in a boot image (header v2, v3 or v4).
 
   chainboot.py [--partition-size BYTES] <android-boot.img> <program.bin> <out.img> [payload.bin]
 
@@ -10,6 +10,11 @@ first and then moves the Image down to 0x40080000 and starts it (mtkloader/fbdia
 payload (mtkloader's "XNUP") follows the Image, 16-aligned. The program's own arm64 header gets
 the Image's length in res2 (0x28), the payload's offset in res3 (0x30) and a covering image_size.
 Everything else - header fields, cmdline, ramdisk, dtb - is copied from the Android image.
+
+v2 is what the Infinix Hot 20's Android 12 ships; v3/v4 is Android 13 and later, where the header
+carries no second stage, no recovery dtbo and no dtb (those fields hold a cmdline instead), the page
+is 4096, and the generic ramdisk lives in init_boot rather than here. An AVB footer at the end of
+the file is not carried over: it signed the old kernel, and an unlocked bootloader does not check it.
 """
 import gzip
 import hashlib
@@ -42,10 +47,24 @@ def main():
     payload = open(args[3], 'rb').read() if len(args) > 3 else b''
     d = open(src, 'rb').read()
     assert d[:8] == b'ANDROID!', 'not an Android boot image'
-    ksize, _, rsize, _, ssize, _, _, page, hver = struct.unpack_from('<9I', d, 8)
-    assert hver == 2, f'header v{hver}, expected 2'
-    rdo_size = struct.unpack_from('<I', d, 1632)[0]
-    dtb_size = struct.unpack_from('<I', d, 1648)[0]
+    hver = struct.unpack_from('<I', d, 40)[0]
+
+    # v3 and v4 put a 1536-byte cmdline where v0-v2 had the id, second stage and dtb, so the two
+    # layouts are read differently rather than one being bent to fit the other.
+    if hver in (0, 1, 2):
+        ksize, _, rsize, _, ssize, _, _, page, hver2 = struct.unpack_from('<9I', d, 8)
+        assert hver2 == hver, f'header v{hver2} in a field that says v{hver}'
+        assert hver == 2, f'header v{hver}: this phone needs v2 (Android 12) or v3/v4 (13 and later)'
+        rdo_size = struct.unpack_from('<I', d, 1632)[0]
+        dtb_size = struct.unpack_from('<I', d, 1648)[0]
+        legacy = True
+    elif hver in (3, 4):
+        ksize, rsize = struct.unpack_from('<2I', d, 8)
+        page = 4096                     # BOOT_IMAGE_HEADER_V3_PAGESIZE: not in the header
+        ssize = rdo_size = dtb_size = 0
+        legacy = False
+    else:
+        raise SystemExit(f'{src}: boot header v{hver} is not one this script knows (v2, v3, v4)')
 
     def pages(n):
         return (n + page - 1) // page * page
@@ -76,13 +95,20 @@ def main():
 
     hdr = bytearray(d[:page])
     struct.pack_into('<I', hdr, 8, len(new_kernel))
-    sha = hashlib.sha1()
-    for part in (new_kernel, ramdisk, second, rdo, dtb):
-        sha.update(part)
-        sha.update(struct.pack('<I', len(part)))
-    hdr[576:608] = pad(sha.digest(), 32)
+    if legacy:
+        sha = hashlib.sha1()
+        for part in (new_kernel, ramdisk, second, rdo, dtb):
+            sha.update(part)
+            sha.update(struct.pack('<I', len(part)))
+        hdr[576:608] = pad(sha.digest(), 32)
+    elif hver == 4:
+        # In v3/v4 the bytes at 576 are inside the cmdline, so no id goes there; a boot signature
+        # covered the kernel that was just replaced, so its field is cleared and its bytes dropped.
+        struct.pack_into('<I', hdr, 1580, 0)
 
-    img = bytes(hdr) + pad(new_kernel, page) + pad(ramdisk, page) + pad(second, page) + pad(rdo, page) + pad(dtb, page)
+    img = bytes(hdr) + pad(new_kernel, page) + pad(ramdisk, page)
+    if legacy:
+        img += pad(second, page) + pad(rdo, page) + pad(dtb, page)
     # boot_a is 64 MB on the POCO C75 and 32 MB on the Infinix Hot 20 (see BOOT_PARTITION): an
     # image any larger is refused by fastboot, and a script that sends fastboot's output nowhere
     # would carry on as if it had been flashed
@@ -90,7 +116,8 @@ def main():
         raise SystemExit(f'{out}: {len(img)} bytes, more than the {partition} of the boot partition '
                          f'({len(img) - partition} too many): the payload has to shrink')
     open(out, 'wb').write(img)
-    print(f'{out}: {len(img)} bytes (program {len(prog)}, Image {len(image)}, payload {len(payload)}, kernel gz {len(new_kernel)})')
+    print(f'{out}: {len(img)} bytes (header v{hver}, program {len(prog)}, Image {len(image)}, '
+          f'payload {len(payload)}, kernel gz {len(new_kernel)})')
 
 
 if __name__ == '__main__':
