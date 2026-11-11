@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -77,21 +77,24 @@ jobs:
           fi
 
       - name: Upload mtkloader.bin
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lake-mtkloader
           path: mtkloader/mtkloader.bin
           if-no-files-found: error
 
       - name: Upload boot.img
-        uses: actions/upload-artifact@v4
+        # Only when Pack boot.img ran: otherwise the step would warn about a file that is
+        # absent by design, and a warning in every run hides the ones that matter.
+        if: ${{ hashFiles('build/boot.img') != '' }}
+        uses: actions/upload-artifact@v7
         with:
           name: lake-boot-img
           path: build/boot.img
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload staged kernel inputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lake-kernel-stage
           path: build/kernel/
