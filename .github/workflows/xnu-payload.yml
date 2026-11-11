@@ -1,0 +1,117 @@
+name: xnu-payload
+
+# XNU itself, built on a GitHub runner: the shared tree (hakios-xnu-kernel, branch mtk) is
+# public, Apple's XNU is on GitHub (xnu-8796.121.2), and its build is a cross-compile to arm64,
+# so no Mac of your own is needed. The one Apple-derived input is the iOS 16.5 SDK, which
+# theos/sdks publishes; the build needs nothing else from Apple and no account anywhere.
+#
+# What comes out is build-payload.bin: the "XNUP" container mtkloader reads (entry "kernel",
+# and a "ramdisk" when one is given). Packing it into boot_a needs only python3, so that half
+# stays on your machine (`make bootimg`): the Android boot image is yours, never this repo's.
+#
+# Manual only: it fetches third-party sources and takes a few minutes, so it does not run on
+# every push.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xnu-payload-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kernel:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      # xnu-env.sh reads these; the tree itself is cloned outside the workspace, where the
+      # path has no spaces (xnu's and theos' scripts do not survive "Проект по умолчанию").
+      THEOS: ${{ runner.temp }}/theos
+      HAKIOS: ${{ runner.temp }}/hakios
+
+    steps:
+      - name: Clone the shared kernel tree (branch mtk)
+        run: |
+          git clone --depth 1 -b mtk \
+            https://github.com/oosexgang/hakios-xnu-kernel.git "$HAKIOS"
+          git -C "$HAKIOS" log --oneline -1
+          test -f "$HAKIOS/xnu/redwood.patch" || { echo "::error::no xnu/redwood.patch in the tree"; exit 1; }
+          test -d "$HAKIOS/xnu/files" || { echo "::error::no xnu/files in the tree"; exit 1; }
+
+      - name: What the kernel build needs from Homebrew
+        # bison and autoconf are what macOS does not ship (its bison is 2.3); flex, m4, perl
+        # and python3 are Apple's own.
+        run: |
+          brew install bison autoconf automake
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix bison)/bin/bison" --version | head -1
+          autoconf --version | head -1
+
+      - name: The iOS 16.5 SDK (theos/sdks, 17 MB)
+        # The only Apple-derived file the kernel is compiled against. Theos itself is not
+        # needed: its cctools are for Linux, and macOS has them in the Command Line Tools.
+        run: |
+          mkdir -p "$THEOS/sdks"
+          curl -fL --retry 3 --retry-delay 5 -o "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+          tar -xJf "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" -C "$THEOS/sdks"
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk" || { echo "::error::the SDK did not unpack"; exit 1; }
+          du -sh "$THEOS/sdks/iPhoneOS16.5.sdk"
+
+      - name: Apple's XNU 8796.121.2 with this port's patch
+        working-directory: ${{ env.HAKIOS }}
+        run: xnu/apply.sh
+
+      - name: Sources, host tools and the SDK overlay
+        working-directory: ${{ env.HAKIOS }}
+        run: xnu-deps/setup.sh
+
+      - name: Build the kernel
+        working-directory: ${{ env.HAKIOS }}
+        shell: bash
+        run: |
+          set +e
+          ./xnu-build.sh -j"$(sysctl -n hw.ncpu)" -k
+          rc=$?
+          set -e
+          echo "make exited $rc (2 is expected: the lldbmacros error ends it once the kernel is linked)"
+          K=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          test -f "$K" || { echo "::error::no kernel at $K: the build did not produce one"; exit 1; }
+          ls -l "$K"
+          file "$K" || true
+
+      - name: Pack the XNUP payload
+        # Kernel only. The root filesystem is the xnusys partition on the eMMC (emmc_root=1),
+        # so a ramdisk is optional for the loader (parse_payload() insists on "kernel" only).
+        working-directory: ${{ env.HAKIOS }}
+        run: |
+          python3 xnuloader/mkpayload.py -o build-payload.bin \
+            kernel=xnu-src/xnu-8796.121.2/BUILD/obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837
+          ls -l build-payload.bin
+          [ "$(head -c 4 build-payload.bin)" = XNUP ] || { echo "::error::payload magic is not XNUP"; exit 1; }
+
+      - name: What to do with it
+        run: |
+          {
+            echo "### build-payload.bin is ready"
+            echo
+            echo "On your machine (python3 and your own boot_a image are enough):"
+            echo
+            echo '```sh'
+            echo "make bootimg XNU_PAYLOAD=build-payload.bin ANDROID_BOOT=backup/boot_a_magisk.img"
+            echo "fastboot -s \"\$HAKIOS_SERIAL\" flash boot_a build/boot.img"
+            echo '```'
+            echo
+            echo "Slot b is never written; the stock boot_a is how the phone is restored."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build-payload.bin
+        uses: actions/upload-artifact@v7
+        with:
+          name: lake-xnu-payload
+          path: ${{ env.HAKIOS }}/build-payload.bin
+          if-no-files-found: error
+          retention-days: 14
