@@ -1,0 +1,33 @@
+name: lint-workflows
+
+# GitHub rejects a whole workflow file for one bad expression and then creates no job at all,
+# which looks like an ordinary failed run: that is how `runner` in a job-level env went
+# unnoticed (run 42982883182, total_count 0). actionlint catches it before the push.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: actionlint (v1.7.7)
+        run: |
+          set -e
+          curl -sSL -o /tmp/actionlint.tar.gz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -version
+          /tmp/actionlint -no-color -oneline .github/workflows/*.yml
