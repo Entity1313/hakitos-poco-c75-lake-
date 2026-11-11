@@ -1,0 +1,12 @@
+# HakiOS defconfig for the POCO C75 4G / Redmi 14C (lake, MediaTek MT6768 / Helio G81 Ultra):
+# the common kernel's configuration, the MT6768's facts and drivers
+# (mtk/mt6768/configs/mt6768.config in the common repository, which leaves every Qualcomm driver
+# out), and this phone's own fragment. What tools/xnu-cycle.sh and .github/workflows/build.yml run:
+# make lake_defconfig && make kernel, then the kernel into boot_a through mtkloader.
+#
+# common_defconfig and mt6768.config belong to the shared kernel tree. tools/mkconfig.py looks for
+# them next to this file, then in $HAKIOS_KERNEL_TREE (or $HAKIOS_CONFIG_DIR), and names the ones it
+# could not find; a device-only configuration still comes out, which is enough for mtkloader.
+#include common_defconfig
+#include mt6768.config
+#include lake.config

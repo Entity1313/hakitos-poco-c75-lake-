@@ -1,0 +1,96 @@
+name: build-lake
+
+# Build the POCO C75 4G / Redmi 14C (lake, MT6768) device side on Apple Silicon:
+# the configuration, the kernel (or, without the shared XNU tree, its staged inputs) and
+# mtkloader.bin. boot.img is packed only when its two inputs are present; this repository never
+# carries an Android boot image or an XNU payload (LEGAL.md).
+
+on:
+  push:
+    branches: [main, mtk, lake]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-lake-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          brew install ninja python@3.12 zig
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install pycryptodome
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          clang --version
+          swift --version
+          ld.lld --version 2>/dev/null || zig version
+
+      - name: Configure (lake_defconfig)
+        run: make lake_defconfig
+
+      - name: Check resolved configuration
+        run: make check
+
+      - name: Build kernel
+        # The shared XNU tree is not in this repository. When it is checked out (submodule or a
+        # path in HAKIOS_KERNEL_TREE), make builds it; otherwise the device drivers and the
+        # resolved configuration are staged in build/kernel/ and the step says so.
+        env:
+          HAKIOS_KERNEL_TREE: ${{ vars.HAKIOS_KERNEL_TREE }}
+        run: make kernel
+
+      - name: Build mtkloader
+        run: make loader
+
+      - name: Pack boot.img
+        # Needs the user's Android boot_a image and an XNU payload; both are deliberately absent
+        # from a clean checkout. Provide them as repository files or via a previous job/artifact.
+        if: ${{ hashFiles('backup/boot_a_magisk.img') != '' && hashFiles('build-payload.bin') != '' }}
+        run: make bootimg
+
+      - name: Show build products
+        run: |
+          ls -la mtkloader/mtkloader.bin
+          ls -la build/boot.img 2>/dev/null || true
+          ls -la build/kernel 2>/dev/null || true
+          if grep -q HAKIOS_IDENTITY_PLACEHOLDER_H mtkloader/identity.h 2>/dev/null; then
+            echo "::warning title=Placeholder identity::mtkloader.bin built without xnuloader/identity.h (no IPSW): not bootable for iOS"
+          fi
+
+      - name: Upload mtkloader.bin
+        uses: actions/upload-artifact@v4
+        with:
+          name: lake-mtkloader
+          path: mtkloader/mtkloader.bin
+          if-no-files-found: error
+
+      - name: Upload boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: lake-boot-img
+          path: build/boot.img
+          if-no-files-found: warn
+
+      - name: Upload staged kernel inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: lake-kernel-stage
+          path: build/kernel/
+          if-no-files-found: warn
