@@ -20,7 +20,10 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 was retired by GitHub ("The configuration 'macos-14-arm64-us-default' is not
+    # supported"): a job asking for it is cancelled before it gets a runner. macos-15 is the
+    # current stable Apple Silicon image; macos-latest now tracks macos-26.
+    runs-on: macos-15
     timeout-minutes: 120
 
     steps:
@@ -31,15 +34,14 @@ jobs:
           fetch-depth: 0
 
       - name: Install dependencies
+        # Nothing Python here needs a third-party package: tools/*.py is stdlib only. The loader
+        # needs an ELF linker and macOS has none, so zig supplies `zig ld.lld` (build.sh also
+        # accepts a real ld.lld or zig cc). Swift rasterizes the 8x16 font; clang builds the rest.
         run: |
-          brew install ninja python@3.12 zig
-          python3 -m venv .venv
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install pycryptodome
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          brew install zig
           clang --version
           swift --version
+          python3 --version
           ld.lld --version 2>/dev/null || zig version
 
       - name: Configure (lake_defconfig)
