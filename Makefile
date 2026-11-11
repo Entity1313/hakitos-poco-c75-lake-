@@ -14,7 +14,7 @@
 #
 #   HAKIOS_KERNEL_TREE=../hakios make lake_defconfig kernel
 #
-# Variables: DEVICE (lake), JOBS, HAKIOS_CONFIG_DIR, ANDROID_BOOT, XNU_PAYLOAD.
+# Variables: DEVICE (lake), JOBS, HAKIOS_CONFIG_DIR, ANDROID_BOOT, XNU_PAYLOAD, BOOT_PARTITION.
 
 DEVICE ?= lake
 JOBS ?= 8
@@ -25,6 +25,8 @@ ANDROID_BOOT ?= backup/boot_a_magisk.img
 XNU_PAYLOAD ?= build-payload.bin
 BOOT_OUT ?= build/boot.img
 BUILD ?= build
+# boot_a's size, from the resolved configuration: 64 MB on the POCO C75, 32 on the Infinix.
+BOOT_PARTITION ?= $(shell sed -n 's/^CONFIG_BOOT_PARTITION=//p' .config 2>/dev/null)
 
 # Where the common fragments may live, most specific first. tools/mkconfig.py skips
 # common_defconfig/mt6768.config with a warning when none of these has them.
@@ -113,7 +115,8 @@ bootimg: loader
 		echo "make bootimg: no $(XNU_PAYLOAD) (xnu/apply.sh + xnu-build.sh + mkpayload.py)" >&2; \
 		exit 1; }
 	@mkdir -p "$(BUILD)"
-	XNU_PAYLOAD="$(XNU_PAYLOAD)" BOOT_OUT="$(BOOT_OUT)" $(PYTHON) mtkloader/build_flashed.py "$(ANDROID_BOOT)"
+	XNU_PAYLOAD="$(XNU_PAYLOAD)" BOOT_OUT="$(BOOT_OUT)" BOOT_PARTITION="$(BOOT_PARTITION)" \
+		$(PYTHON) mtkloader/build_flashed.py "$(ANDROID_BOOT)"
 	@ls -la "$(BOOT_OUT)"
 
 clean:

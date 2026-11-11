@@ -2,7 +2,7 @@
 """
 Put a bare-metal program in front of Android's kernel in a boot image (header v2).
 
-  chainboot.py <android-boot.img> <program.bin> <out.img> [payload.bin]
+  chainboot.py [--partition-size BYTES] <android-boot.img> <program.bin> <out.img> [payload.bin]
 
 LK decompresses the kernel to 0x40080000 and enters it there. The new kernel is gzip of:
 program.bin, padded to CHAIN_OFFSET, then Android's own (uncompressed) Image. The program runs
@@ -13,11 +13,17 @@ Everything else - header fields, cmdline, ramdisk, dtb - is copied from the Andr
 """
 import gzip
 import hashlib
+import os
 import struct
 import sys
 
 CHAIN_OFFSET = 0x40000
-BOOT_PARTITION = 32 << 20
+# The size of boot_a. It is not the same on every phone - 32 MB on the Infinix Hot 20,
+# 64 MB on the POCO C75 - and fastboot refuses an image any larger, so the check below is
+# per device: CONFIG_BOOT_PARTITION in .config, which `make bootimg` passes in the
+# environment, or --partition-size for a script that calls this directly. The default is
+# this repository's own board.
+BOOT_PARTITION = 64 << 20
 
 
 def pad(b, n):
@@ -25,8 +31,15 @@ def pad(b, n):
 
 
 def main():
-    src, prog_path, out = sys.argv[1:4]
-    payload = open(sys.argv[4], 'rb').read() if len(sys.argv) > 4 else b''
+    args = sys.argv[1:]
+    partition = int(os.environ.get('BOOT_PARTITION') or BOOT_PARTITION)
+    if args and args[0] == '--partition-size':
+        partition = int(args[1], 0)
+        args = args[2:]
+    if len(args) < 3:
+        raise SystemExit(__doc__)
+    src, prog_path, out = args[:3]
+    payload = open(args[3], 'rb').read() if len(args) > 3 else b''
     d = open(src, 'rb').read()
     assert d[:8] == b'ANDROID!', 'not an Android boot image'
     ksize, _, rsize, _, ssize, _, _, page, hver = struct.unpack_from('<9I', d, 8)
@@ -70,11 +83,12 @@ def main():
     hdr[576:608] = pad(sha.digest(), 32)
 
     img = bytes(hdr) + pad(new_kernel, page) + pad(ramdisk, page) + pad(second, page) + pad(rdo, page) + pad(dtb, page)
-    # boot_a on the X6826B is 32 MB: an image any larger is refused by fastboot, and a script that
-    # sends fastboot's output nowhere would carry on as if it had been flashed
-    if len(img) > BOOT_PARTITION:
-        raise SystemExit(f'{out}: {len(img)} bytes, more than the {BOOT_PARTITION} of the boot partition '
-                         f'({len(img) - BOOT_PARTITION} too many): the payload has to shrink')
+    # boot_a is 64 MB on the POCO C75 and 32 MB on the Infinix Hot 20 (see BOOT_PARTITION): an
+    # image any larger is refused by fastboot, and a script that sends fastboot's output nowhere
+    # would carry on as if it had been flashed
+    if len(img) > partition:
+        raise SystemExit(f'{out}: {len(img)} bytes, more than the {partition} of the boot partition '
+                         f'({len(img) - partition} too many): the payload has to shrink')
     open(out, 'wb').write(img)
     print(f'{out}: {len(img)} bytes (program {len(prog)}, Image {len(image)}, payload {len(payload)}, kernel gz {len(new_kernel)})')
 
